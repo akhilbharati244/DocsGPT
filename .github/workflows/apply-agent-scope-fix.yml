@@ -1,0 +1,146 @@
+name: Apply agent scope fix
+
+on:
+  push:
+    branches:
+      - fix/postgres-ssrf-protection
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply changes
+        env:
+          TARGET_BRANCH: fix/postgres-ssrf-protection
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docsgpt/api/answer/services/stream_processor.py')
+          s = p.read_text()
+
+          old = '''    def _load_conversation_history(self):
+        """Load conversation history either from DB or request"""
+        if self.conversation_id and self.initial_user_id:
+            self._retire_unanswered_pause()
+            conversation = self.conversation_service.get_conversation(
+                self.conversation_id, self.initial_user_id
+            )
+            if not conversation:
+                raise ValueError("Conversation not found or unauthorized")
+'''
+          new = '''    def _conversation_matches_agent(self, conversation: Dict[str, Any]) -> bool:
+        """Return True when ``conversation`` belongs to the active agent or API key."""
+        conv_agent_id = str(conversation.get("agent_id") or "").strip().lower()
+        conv_api_key = str(conversation.get("api_key") or "").strip()
+        expected_agent_id = str(self.agent_id or "").strip().lower()
+        expected_api_key = str(
+            self.agent_config.get("user_api_key") or self.data.get("api_key") or ""
+        ).strip()
+
+        if expected_agent_id and conv_agent_id:
+            return conv_agent_id == expected_agent_id
+        if expected_api_key and conv_api_key:
+            return conv_api_key == expected_api_key
+        return False
+
+    def _load_conversation_history(self):
+        """Load conversation history either from DB or request"""
+        if self.conversation_id and self.initial_user_id:
+            requires_agent_scope = bool(
+                self.data.get("api_key")
+                or self.agent_config.get("external_api_caller")
+                or self.agent_config.get("public_link_caller")
+            )
+            if requires_agent_scope:
+                conversation = self.conversation_service.get_conversation(
+                    self.conversation_id, self.initial_user_id
+                )
+                if not conversation or not self._conversation_matches_agent(
+                    conversation
+                ):
+                    raise ValueError("Conversation not found or unauthorized")
+                self._retire_unanswered_pause()
+                if not getattr(self, "_answering_resent_round", False):
+                    conversation = (
+                        self.conversation_service.get_conversation(
+                            self.conversation_id, self.initial_user_id
+                        )
+                        or conversation
+                    )
+            else:
+                self._retire_unanswered_pause()
+                conversation = self.conversation_service.get_conversation(
+                    self.conversation_id, self.initial_user_id
+                )
+                if not conversation:
+                    raise ValueError("Conversation not found or unauthorized")
+'''
+          if old not in s:
+              if 'def _conversation_matches_agent(self, conversation: Dict[str, Any]) -> bool:' in s:
+                  print('conversation scope change already present')
+              else:
+                  raise SystemExit('conversation history anchor not found')
+          else:
+              s = s.replace(old, new, 1)
+
+          old = '''        agent_id = self._resolve_agent_id()
+'''
+          new = '''        explicit_api_key = self.data.get("api_key")
+        agent_id = None if explicit_api_key else self._resolve_agent_id()
+'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'explicit_api_key = self.data.get("api_key")' not in s:
+              raise SystemExit('agent id resolution anchor not found')
+
+          old = '''        # Determine the effective API key (explicit > agent-derived)
+        effective_key = self.data.get("api_key") or self.agent_key
+'''
+          new = '''        # Determine the effective API key (explicit > agent-derived)
+        effective_key = explicit_api_key or self.agent_key
+'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'effective_key = explicit_api_key or self.agent_key' not in s:
+              raise SystemExit('effective key anchor not found')
+
+          old = '''            if self._agent_data.get("_id"):
+                self.agent_id = str(self._agent_data.get("_id"))
+'''
+          new = '''            resolved_agent_id = self._agent_data.get("_id") or self._agent_data.get("id")
+            if explicit_api_key and self.data.get("agent_id") and resolved_agent_id:
+                if (
+                    str(self.data["agent_id"]).strip().lower()
+                    != str(resolved_agent_id).strip().lower()
+                ):
+                    raise ValueError("Agent ID does not match the provided API key")
+            if resolved_agent_id:
+                self.agent_id = str(resolved_agent_id)
+'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'resolved_agent_id = self._agent_data.get("_id") or self._agent_data.get("id")' not in s:
+              raise SystemExit('resolved agent id anchor not found')
+
+          p.write_text(s)
+          PY
+
+      - name: Commit and remove helper workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docsgpt/api/answer/services/stream_processor.py .github/workflows/apply-agent-scope-fix.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git rm .github/workflows/apply-agent-scope-fix.yml
+          git add docsgpt/api/answer/services/stream_processor.py
+          git commit -m "fix: isolate agent conversation scope"
+          git push origin "$TARGET_BRANCH"
