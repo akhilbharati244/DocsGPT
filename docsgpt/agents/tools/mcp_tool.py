@@ -294,30 +294,68 @@ class MCPTool(Tool):
         return f"{settings.API_URL.rstrip('/')}/api/mcp_server/callback"
 
     def _generate_cache_key(self) -> str:
-        """Generate a unique cache key for this MCP server configuration."""
-        auth_key = ""
-        if self.auth_type == "oauth":
-            scopes_str = ",".join(self.oauth_scopes) if self.oauth_scopes else "none"
-            # A connection-backed tool shares a client only with calls that
-            # use the same connection's tokens.
-            oauth_identity = self.connection_id or self.user_id or self.oauth_task_id or "anonymous"
-            auth_key = (
-                f"oauth:{oauth_identity}:{self.oauth_client_name}:{scopes_str}:{self.redirect_uri}"
-            )
-        elif self.auth_type in ["bearer"]:
-            token = self.auth_credentials.get(
-                "bearer_token", ""
-            ) or self.auth_credentials.get("access_token", "")
-            auth_key = f"bearer:{_secret_fingerprint(token)}" if token else "bearer:none"
-        elif self.auth_type == "api_key":
-            api_key = self.auth_credentials.get("api_key", "")
-            auth_key = f"apikey:{_secret_fingerprint(api_key)}" if api_key else "apikey:none"
-        elif self.auth_type == "basic":
-            username = self.auth_credentials.get("username", "")
-            auth_key = f"basic:{username}"
-        else:
-            auth_key = "none"
-        return f"{self.server_url}#{self.transport_type}#{auth_key}"
+    """Generate a unique cache key for this MCP server configuration."""
+    auth_key = ""
+    if self.auth_type == "oauth":
+        scopes_str = ",".join(self.oauth_scopes) if self.oauth_scopes else "none"
+        # A connection-backed tool shares a client only with calls that
+        # use the same connection's tokens.
+        oauth_identity = (
+            self.connection_id
+            or self.user_id
+            or self.oauth_task_id
+            or "anonymous"
+        )
+        auth_key = (
+            f"oauth:{oauth_identity}:{self.oauth_client_name}:"
+            f"{scopes_str}:{self.redirect_uri}"
+        )
+    elif self.auth_type in ["bearer"]:
+        token = self.auth_credentials.get(
+            "bearer_token", ""
+        ) or self.auth_credentials.get("access_token", "")
+        auth_key = (
+            f"bearer:{_secret_fingerprint(token)}"
+            if token
+            else "bearer:none"
+        )
+    elif self.auth_type == "api_key":
+        api_key = self.auth_credentials.get("api_key", "")
+        api_key_header = self.auth_credentials.get(
+            "api_key_header", "X-API-Key"
+        )
+        auth_key = (
+            f"apikey:{api_key_header}:{_secret_fingerprint(api_key)}"
+            if api_key
+            else "apikey:none"
+        )
+    elif self.auth_type == "basic":
+        username = self.auth_credentials.get("username", "")
+        password = self.auth_credentials.get("password", "")
+        pwd_fp = _secret_fingerprint(password) if password else "none"
+        auth_key = f"basic:{username}:{pwd_fp}"
+    else:
+        auth_key = "none"
+
+    user_id = getattr(self, "user_id", None)
+    user_scope = f"user:{user_id}" if user_id else "user:anon"
+
+    custom_headers = getattr(self, "custom_headers", None)
+    if isinstance(custom_headers, dict) and custom_headers:
+        serialized_headers = json.dumps(
+            sorted((str(k), str(v)) for k, v in custom_headers.items()),
+            separators=(",", ":"),
+        )
+        headers_key = (
+            f"headers:{_secret_fingerprint(serialized_headers)}"
+        )
+    else:
+        headers_key = "headers:none"
+
+    return (
+        f"{self.server_url}#{self.transport_type}#"
+        f"{auth_key}#{user_scope}#{headers_key}"
+    )
 
     def _setup_client(self):
         global _mcp_clients_cache
