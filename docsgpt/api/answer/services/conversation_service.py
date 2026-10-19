@@ -63,6 +63,40 @@ def _final_finish_reason(llm: Any) -> Optional[str]:
     return getattr(llm, "_last_finish_reason", None)
 
 
+def _verify_conversation_agent_scope(
+    conn: Any,
+    conv: Dict[str, Any],
+    *,
+    api_key: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> None:
+    """Make sure that an agent or API-key call only modifies its own conversations."""
+    if not api_key and not agent_id:
+        return
+
+    expected_agent_id = str(agent_id or "").strip().lower()
+    expected_api_key = str(api_key or "").strip()
+    if expected_api_key and not expected_agent_id:
+        agent_row = AgentsRepository(conn).find_by_key(expected_api_key)
+        if agent_row:
+            expected_agent_id = str(
+                agent_row.get("id") or agent_row.get("_id") or ""
+            ).strip().lower()
+
+    conv_agent_id = str(conv.get("agent_id") or "").strip().lower()
+    conv_api_key = str(conv.get("api_key") or "").strip()
+
+    if expected_agent_id and conv_agent_id:
+        if conv_agent_id == expected_agent_id:
+            return
+        raise ValueError("Conversation not found or unauthorized")
+    if expected_api_key and conv_api_key:
+        if conv_api_key == expected_api_key:
+            return
+        raise ValueError("Conversation not found or unauthorized")
+    raise ValueError("Conversation not found or unauthorized")
+
+
 class ConversationService:
     def get_conversation(
         self, conversation_id: str, user_id: str
@@ -190,6 +224,9 @@ class ConversationService:
                 conv = repo.get_any(conversation_id, user_id)
                 if conv is None:
                     raise ValueError("Conversation not found or unauthorized")
+                _verify_conversation_agent_scope(
+                    conn, conv, api_key=api_key, agent_id=agent_id
+                )
                 conv_pg_id = str(conv["id"])
                 repo.update_message_at(conv_pg_id, index, message_payload)
                 repo.truncate_after(conv_pg_id, index)
@@ -200,6 +237,9 @@ class ConversationService:
                 conv = repo.get_any(conversation_id, user_id)
                 if conv is None:
                     raise ValueError("Conversation not found or unauthorized")
+                _verify_conversation_agent_scope(
+                    conn, conv, api_key=api_key, agent_id=agent_id
+                )
                 conv_pg_id = str(conv["id"])
                 # append_message expects 'metadata' key either way; normalise.
                 append_payload = dict(message_payload)
@@ -317,6 +357,9 @@ class ConversationService:
                 conv = repo.get_any(conversation_id, user_id)
                 if conv is None:
                     raise ValueError("Conversation not found or unauthorized")
+                _verify_conversation_agent_scope(
+                    conn, conv, api_key=api_key, agent_id=agent_id
+                )
                 conv_pg_id = str(conv["id"])
                 # Regenerate / edit-prior-question: drop the message at
                 # ``index`` and everything after it so the new
