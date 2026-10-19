@@ -14,6 +14,8 @@ segment sequence:
 
 from __future__ import annotations
 
+import os
+import re
 import shlex
 from typing import Optional
 
@@ -30,6 +32,45 @@ _TWO_WORD_HEADS = frozenset(
     }
 )
 
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*")
+_SHELL_INTERPRETERS = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "ash", "eval", "exec"}
+)
+
+
+def _has_unsafe_shell_syntax(text: str) -> bool:
+    """Return True if ``text`` has shell substitutions, redirections, or subshells."""
+    in_single = False
+    in_double = False
+    escaped = False
+    length = len(text)
+
+    for idx, ch in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and not in_single:
+            escaped = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+
+        if not in_single:
+            if ch == "`":
+                return True
+            if ch == "$" and idx + 1 < length and text[idx + 1] in ("(", "{"):
+                return True
+
+        if not in_single and not in_double:
+            if ch in ("<", ">", "(", ")"):
+                return True
+
+    return in_single or in_double or escaped
+
 
 def normalize_segment(segment: str) -> str:
     """Reduce a segment to its sticky-pattern form.
@@ -39,18 +80,27 @@ def normalize_segment(segment: str) -> str:
 
     Returns:
         Pattern like ``git checkout *``, ``ls *``, or just ``cat`` if the
-        original had no args. Empty string for empty input.
+        original had no args. Empty string for empty or unsafe input.
     """
-    if not segment or not segment.strip():
+    if not segment or not isinstance(segment, str) or not segment.strip():
         return ""
+    stripped = segment.strip()
+    if _has_unsafe_shell_syntax(stripped):
+        return ""
+
     try:
-        tokens = shlex.split(segment.strip(), posix=True)
+        tokens = shlex.split(stripped, posix=True)
     except ValueError:
-        tokens = segment.strip().split()
+        return ""
     if not tokens:
         return ""
 
     head = tokens[0]
+    if _ENV_ASSIGNMENT_RE.match(head):
+        return ""
+    base_head = os.path.basename(head.lstrip("\\"))
+    if base_head in _SHELL_INTERPRETERS:
+        return ""
 
     if head in _TWO_WORD_HEADS and len(tokens) >= 2:
         subcmd = tokens[1]
@@ -70,15 +120,17 @@ def normalize_command(command: str) -> Optional[str]:
     so a compound command's sticky only matches a command with the same
     normalized segment sequence (approving ``ls /tmp && whoami`` won't
     auto-approve ``ls /tmp && rm /tmp/x``). Empty segments are skipped;
-    returns ``None`` if there are no non-empty segments.
+    returns ``None`` if there are no non-empty segments or if any segment
+    contains unsafe shell syntax.
     """
-    if not command:
+    if not command or not isinstance(command, str):
         return None
-    patterns = [
-        normalize_segment(segment)
-        for segment in split_command(command)
-    ]
-    patterns = [p for p in patterns if p]
-    if not patterns:
+    if _has_unsafe_shell_syntax(command):
+        return None
+    segments = split_command(command)
+    if not segments:
+        return None
+    patterns = [normalize_segment(segment) for segment in segments]
+    if any(not p for p in patterns):
         return None
     return " && ".join(patterns)
