@@ -292,6 +292,16 @@ class TestGenerateCacheKey:
         })
         assert "basic:user1" in tool._cache_key
 
+    def test_basic_auth_different_passwords_get_distinct_cache_keys(self):
+        first = _make_tool({"server_url":"https://mcp.example.com","auth_type":"basic","auth_credentials":{"username":"user1","password":"pass-one"}})
+        second = _make_tool({"server_url":"https://mcp.example.com","auth_type":"basic","auth_credentials":{"username":"user1","password":"pass-two"}})
+        assert first._cache_key != second._cache_key
+
+    def test_custom_headers_and_user_id_isolate_cache_keys(self):
+        first = _make_tool({"server_url":"https://mcp.example.com","auth_type":"none","headers":{"X-Custom":"one"}}, user_id="user1")
+        second = _make_tool({"server_url":"https://mcp.example.com","auth_type":"none","headers":{"X-Custom":"two"}}, user_id="user2")
+        assert first._cache_key != second._cache_key
+
     def test_oauth_auth_includes_scopes(self):
         tool = _make_tool({
             "server_url": "https://mcp.example.com",

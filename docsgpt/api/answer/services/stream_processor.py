@@ -751,15 +751,52 @@ class StreamProcessor:
                 self.conversation_id,
             )
 
+    def _conversation_matches_agent(self, conversation: Dict[str, Any]) -> bool:
+        """Return True when ``conversation`` belongs to the active agent or API key."""
+        conv_agent_id = str(conversation.get("agent_id") or "").strip().lower()
+        conv_api_key = str(conversation.get("api_key") or "").strip()
+        expected_agent_id = str(self.agent_id or "").strip().lower()
+        expected_api_key = str(
+            self.agent_config.get("user_api_key") or self.data.get("api_key") or ""
+        ).strip()
+
+        if expected_agent_id and conv_agent_id:
+            return conv_agent_id == expected_agent_id
+        if expected_api_key and conv_api_key:
+            return conv_api_key == expected_api_key
+        return False
+
     def _load_conversation_history(self):
         """Load conversation history either from DB or request"""
         if self.conversation_id and self.initial_user_id:
-            self._retire_unanswered_pause()
-            conversation = self.conversation_service.get_conversation(
-                self.conversation_id, self.initial_user_id
+            requires_agent_scope = bool(
+                self.data.get("api_key")
+                or self.agent_config.get("external_api_caller")
+                or self.agent_config.get("public_link_caller")
             )
-            if not conversation:
-                raise ValueError("Conversation not found or unauthorized")
+            if requires_agent_scope:
+                conversation = self.conversation_service.get_conversation(
+                    self.conversation_id, self.initial_user_id
+                )
+                if not conversation or not self._conversation_matches_agent(
+                    conversation
+                ):
+                    raise ValueError("Conversation not found or unauthorized")
+                self._retire_unanswered_pause()
+                if not getattr(self, "_answering_resent_round", False):
+                    conversation = (
+                        self.conversation_service.get_conversation(
+                            self.conversation_id, self.initial_user_id
+                        )
+                        or conversation
+                    )
+            else:
+                self._retire_unanswered_pause()
+                conversation = self.conversation_service.get_conversation(
+                    self.conversation_id, self.initial_user_id
+                )
+                if not conversation:
+                    raise ValueError("Conversation not found or unauthorized")
 
             self.earlier_attachments = self._with_request_earlier_attachments(
                 self._load_earlier_attachments(conversation)
@@ -1527,7 +1564,8 @@ class StreamProcessor:
 
         Unified flow: resolve the effective API key, then extract config once.
         """
-        agent_id = self._resolve_agent_id()
+        explicit_api_key = self.data.get("api_key")
+        agent_id = None if explicit_api_key else self._resolve_agent_id()
 
         self.agent_key, self.is_shared_usage, self.shared_token = self._get_agent_key(
             agent_id, self.initial_user_id
@@ -1538,7 +1576,7 @@ class StreamProcessor:
         )
 
         # Determine the effective API key (explicit > agent-derived)
-        effective_key = self.data.get("api_key") or self.agent_key
+        effective_key = explicit_api_key or self.agent_key
         # A draft agent has no key yet but is still that agent: its prompt,
         # model, type, sources and tools, read from the row _get_agent_key
         # already authorized.
@@ -1550,8 +1588,15 @@ class StreamProcessor:
             else:
                 with db_readonly() as conn:
                     self._agent_data = self._agent_run_data(conn, draft_row)
-            if self._agent_data.get("_id"):
-                self.agent_id = str(self._agent_data.get("_id"))
+            resolved_agent_id = self._agent_data.get("_id") or self._agent_data.get("id")
+            if explicit_api_key and self.data.get("agent_id") and resolved_agent_id:
+                if (
+                    str(self.data["agent_id"]).strip().lower()
+                    != str(resolved_agent_id).strip().lower()
+                ):
+                    raise ValueError("Agent ID does not match the provided API key")
+            if resolved_agent_id:
+                self.agent_id = str(resolved_agent_id)
 
             self.agent_config.update(
                 {

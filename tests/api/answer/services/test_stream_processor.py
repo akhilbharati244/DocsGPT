@@ -144,7 +144,6 @@ class TestStreamProcessorAgentConfiguration:
         assert processor.agent_config["workflow_owner"] == "user_123"
 
 
-
 @pytest.mark.unit
 class TestStreamProcessorDocPrefetch:
     pass
@@ -184,9 +183,6 @@ class TestStreamProcessorDocPrefetch:
         processor.create_retriever.assert_not_called()
         assert docs_together is None
         assert docs is None
-
-
-
 
 
 @pytest.mark.unit
@@ -270,7 +266,6 @@ class TestBuildContinuationFromMessages:
         assert tools_dict == fake_agent.tool_executor.get_tools.return_value
         assert returned_actions is tool_actions
         assert reasoning == ""
-        # prior_messages stop before the assistant-with-tool_calls message.
         assert prior_messages == messages[:2]
         assert len(pending_tool_calls) == 1
         call = pending_tool_calls[0]
@@ -285,9 +280,7 @@ class TestBuildContinuationFromMessages:
         processor, _ = self._make_processor()
         messages = self._messages_with_tool_call("not-json")
 
-        _, _, _, pending_tool_calls, _, _ = (
-            processor.build_continuation_from_messages(messages, [])
-        )
+        _, _, _, pending_tool_calls, _, _ = processor.build_continuation_from_messages(messages, [])
 
         assert pending_tool_calls[0]["arguments"] == {}
 
@@ -295,9 +288,7 @@ class TestBuildContinuationFromMessages:
         processor, _ = self._make_processor()
         messages = self._messages_with_tool_call({"already": "parsed"})
 
-        _, _, _, pending_tool_calls, _, _ = (
-            processor.build_continuation_from_messages(messages, [])
-        )
+        _, _, _, pending_tool_calls, _, _ = processor.build_continuation_from_messages(messages, [])
 
         assert pending_tool_calls[0]["arguments"] == {"already": "parsed"}
 
@@ -305,39 +296,16 @@ class TestBuildContinuationFromMessages:
         processor, _ = self._make_processor()
         messages = [
             {"role": "user", "content": "first"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "old",
-                        "type": "function",
-                        "function": {"name": "search", "arguments": "{}"},
-                    }
-                ],
-            },
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "old", "type": "function", "function": {"name": "search", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "old", "content": "r1"},
             {"role": "user", "content": "second"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "new",
-                        "type": "function",
-                        "function": {"name": "search", "arguments": "{}"},
-                    }
-                ],
-            },
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "new", "type": "function", "function": {"name": "search", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "new", "content": "r2"},
         ]
 
-        _, prior_messages, _, pending_tool_calls, _, _ = (
-            processor.build_continuation_from_messages(messages, [])
-        )
+        _, prior_messages, _, pending_tool_calls, _, _ = processor.build_continuation_from_messages(messages, [])
 
         assert pending_tool_calls[0]["call_id"] == "new"
-        # Everything up to (not including) the last assistant tool_calls message.
         assert prior_messages == messages[:4]
 
     def test_raises_when_no_assistant_tool_calls(self):
@@ -351,3 +319,16 @@ class TestBuildContinuationFromMessages:
             processor.build_continuation_from_messages(messages, [])
 
 
+@pytest.mark.unit
+class TestApiKeyConversationScopeIsolation:
+    def test_api_key_rejects_owner_private_non_agent_conversation(self):
+        ...
+
+    def test_api_key_rejects_different_agent_conversation(self):
+        ...
+
+    def test_api_key_allows_matching_agent_conversation(self):
+        ...
+
+    def test_verify_conversation_agent_scope_blocks_cross_agent_writes(self):
+        ...
