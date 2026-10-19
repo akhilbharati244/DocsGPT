@@ -210,3 +210,43 @@ def test_compound_with_dangerous_segment():
 
 def test_empty_command():
     assert check_denylist("") is None
+
+
+def test_denylist_catches_sudo_and_doas_wrappers():
+    assert check_denylist("sudo rm -rf /") == "rm -rf /"
+    assert check_denylist("sudo -u root rm -r -f /") == "rm -rf /"
+    assert check_denylist("doas rm -rf /") == "rm -rf /"
+    assert check_denylist("sudo shutdown -h now") == "shutdown"
+
+
+def test_denylist_catches_env_and_command_wrappers():
+    assert check_denylist("env rm -rf /") == "rm -rf /"
+    assert check_denylist("env -i PATH=/bin rm -rf /") == "rm -rf /"
+    assert check_denylist("FOO=1 BAR=2 rm -rf /") == "rm -rf /"
+    assert check_denylist("command rm -rf /") == "rm -rf /"
+    assert check_denylist("command -p rm -rf /") == "rm -rf /"
+    assert check_denylist("command -v rm") is None
+
+
+def test_denylist_catches_absolute_paths_and_escaped_names():
+    assert check_denylist("/bin/rm -rf /") == "rm -rf /"
+    assert check_denylist("/usr/bin/rm -rf /") == "rm -rf /"
+    assert check_denylist(r"\rm -rf /") == "rm -rf /"
+    assert check_denylist("/sbin/mkfs.ext4 /dev/sda1") == "mkfs"
+
+
+def test_denylist_catches_shell_c_eval_and_subshells():
+    assert check_denylist('sh -c "rm -rf /"') == "rm -rf /"
+    assert check_denylist('bash -lc "rm -rf /"') == "rm -rf /"
+    assert check_denylist('eval "rm -rf /"') == "rm -rf /"
+    assert check_denylist("echo $(rm -rf /)") == "rm -rf /"
+    assert check_denylist("echo `rm -rf /`") == "rm -rf /"
+    assert check_denylist("(rm -rf /)") == "rm -rf /"
+
+
+def test_denylist_catches_separated_and_long_flags_for_home_and_tilde():
+    assert check_denylist("rm -r -f ~") == "rm -rf ~"
+    assert check_denylist("rm --recursive --force ~/*") == "rm -rf ~"
+    assert check_denylist("rm -r -f $HOME") == "rm -rf $HOME"
+    assert check_denylist("rm -rf ${HOME}/*") == "rm -rf $HOME"
+    assert check_denylist("rm -Rf /") == "rm -rf /"
