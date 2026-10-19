@@ -1,15 +1,22 @@
 """Tests for docsgpt/agents/tools/postgres.py"""
 
+import ipaddress
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from docsgpt.agents.tools.postgres import PostgresTool
+from docsgpt.agents.tools.postgres import (
+    PostgresTool,
+    validate_and_pin_postgres_conninfo,
+)
+from docsgpt.security.safe_url import UnsafeUserUrlError
 
 
 @pytest.fixture
 def tool():
-    return PostgresTool(config={"token": "postgresql://user:pass@localhost/testdb"})
+    return PostgresTool(
+        config={"token": "postgresql://user:pass@93.184.216.34/testdb"}
+    )
 
 
 @pytest.mark.unit
@@ -161,3 +168,75 @@ class TestPostgresMetadata:
         reqs = tool.get_config_requirements()
         assert "token" in reqs
         assert reqs["token"]["secret"] is True
+
+
+@pytest.mark.unit
+class TestPostgresSSRFProtection:
+    @pytest.mark.parametrize(
+        "unsafe_conn_str",
+        [
+            "postgresql://user:pass@localhost:5432/db",
+            "postgresql://user:pass@127.0.0.1:5432/db",
+            "postgresql://user:pass@10.0.0.5:5432/db",
+            "postgresql://user:pass@169.254.169.254:5432/db",
+            "postgresql://user:pass@[::1]:5432/db",
+            "postgresql://user:pass@metadata.google.internal:5432/db",
+            "postgresql:///db",
+            "host=/var/run/postgresql dbname=db",
+            "host=93.184.216.34 dbname=db passfile=/etc/passwd",
+            "host=93.184.216.34 dbname=db sslrootcert=/etc/shadow",
+            "host=93.184.216.34,127.0.0.1 dbname=db",
+        ],
+    )
+    @patch("docsgpt.agents.tools.postgres.psycopg.connect")
+    def test_rejects_unsafe_connection_strings(
+        self, mock_connect, unsafe_conn_str
+    ):
+        with pytest.raises(UnsafeUserUrlError):
+            validate_and_pin_postgres_conninfo(unsafe_conn_str)
+
+        bad_tool = PostgresTool(config={"token": unsafe_conn_str})
+        sql_res = bad_tool.execute_action(
+            "postgres_execute_sql", sql_query="SELECT 1"
+        )
+        assert sql_res["status_code"] == 400
+        assert "Invalid connection string" in sql_res["error"]
+
+        schema_res = bad_tool.execute_action("postgres_get_schema")
+        assert schema_res["status_code"] == 400
+        assert "Invalid connection string" in schema_res["error"]
+        mock_connect.assert_not_called()
+
+    @patch("docsgpt.agents.tools.postgres._resolve")
+    def test_rejects_dns_resolving_to_private_ip(self, mock_resolve):
+        mock_resolve.return_value = [
+            ipaddress.ip_address("93.184.216.34"),
+            ipaddress.ip_address("10.0.0.1"),
+        ]
+        with pytest.raises(UnsafeUserUrlError, match="blocked address"):
+            validate_and_pin_postgres_conninfo(
+                "postgresql://user:pass@db.example.com:5432/prod"
+            )
+
+    @patch("docsgpt.agents.tools.postgres._resolve")
+    def test_pins_resolved_public_ip_into_hostaddr(self, mock_resolve):
+        mock_resolve.return_value = [ipaddress.ip_address("93.184.216.34")]
+        pinned = validate_and_pin_postgres_conninfo(
+            "postgresql://user:pass@db.example.com:5432/prod"
+        )
+        assert "hostaddr=93.184.216.34" in pinned
+
+    def test_rejects_application_postgres_uri(self, monkeypatch):
+        from docsgpt.core.settings import settings
+
+        monkeypatch.setattr(
+            settings,
+            "POSTGRES_URI",
+            "postgresql://app:secret@93.184.216.34:5432/docsgpt",
+        )
+        with pytest.raises(
+            UnsafeUserUrlError, match="cannot target the application database"
+        ):
+            validate_and_pin_postgres_conninfo(
+                "postgresql://app:secret@93.184.216.34:5432/docsgpt"
+            )
